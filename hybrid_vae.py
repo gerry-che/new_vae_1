@@ -360,7 +360,7 @@ class Trainer(object):
             meanloss = np.mean(losses)
             self.epoch_losses.append(meanloss)
             write_log("Epoch {} : Average Loss: {}".format(epoch + 1, meanloss), self.log_path)
-            self.save_checkpoint(epoch)
+            #self.save_checkpoint(epoch)
             self.model.eval()
             self.sample_frames(epoch + 1)
             sample = self.test[int(torch.randint(0, len(self.test), (1,)).item())]
@@ -423,7 +423,7 @@ if __name__ == '__main__':
                       learning_rate=FLAGS.learn_rate, checkpoints='%s/%s-disentangled-vae.model'%(model_path, FLAGS.method), nsamples=FLAGS.nsamples,
                       sample_path=log_sample,
                       recon_path=log_recon, log_path = log_path, grad_clip=FLAGS.grad_clip)
-    trainer.load_checkpoint()
+    #trainer.load_checkpoint()
     trainer.train_model()
     endtime = datetime.datetime.now()
     seconds = (endtime - starttime).seconds

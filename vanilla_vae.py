@@ -46,11 +46,19 @@ class FullQDisentangledVAE(nn.Module):
         self.z_mean = nn.Linear(self.hidden_dim, self.z_dim)
         self.z_logvar = nn.Linear(self.hidden_dim, self.z_dim)
 
-        self.z_mean_prior = nn.Linear(self.z_dim, self.z_dim)
-        self.z_logvar_prior = nn.Linear(self.z_dim, self.z_dim)
+        self.z_mean_prior = nn.Sequential(
+            nn.Linear(self.hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, self.z_dim)
+        )
+        self.z_logvar_prior = nn.Sequential(
+            nn.Linear(self.hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, self.z_dim)
+        )
 
-        #self.z_to_c_fwd = nn.Linear(self.z_dim, self.z_dim)
-        self.z_to_z_fwd = GRUCell(input_size=self.z_dim, hidden_size=self.z_dim).to(device)
+        # self.z_to_c_fwd = nn.Linear(self.z_dim, self.z_dim)
+        self.z_to_z_fwd = GRUCell(input_size=self.z_dim, hidden_size=self.hidden_dim).to(device)
 
         self.conv1 = nn.Conv2d(3, 256, kernel_size=4, stride=2, padding=1)
         self.conv2 = nn.Conv2d(256, 256, kernel_size=4, stride=2, padding=1)
@@ -136,7 +144,7 @@ class FullQDisentangledVAE(nn.Module):
         zt_1 = torch.stack(zt_1, dim=0)
         #zt_1 = torch.zeros(batch_size, self.z_dim).to(device)
 
-        z_fwd = zt_1.new_zeros(batch_size, self.z_dim)
+        z_fwd = zt_1.new_zeros(batch_size, self.hidden_dim)
 
         for t in range(1, seq_size):
             if torch.isnan(zt_1).any().item():
@@ -255,7 +263,7 @@ class Trainer(object):
             zt_1 = [prior_z0.rsample() for i in range(self.samples)]
             zt_1 = torch.stack(zt_1, dim=0)
             zt_dec.append(zt_1)
-            z_fwd = zt_1.new_zeros(self.samples, self.model.z_dim)
+            z_fwd = zt_1.new_zeros(self.samples, self.model.hidden_dim)
 
             for t in range(1, 8):
 
@@ -325,7 +333,7 @@ if __name__ == '__main__':
     parser.add_argument('--dset_name', type=str, default='moving_mnist')
     # state size
     parser.add_argument('--z-dim', type=int, default=36)
-    parser.add_argument('--hidden-dim', type=int, default=512)
+    parser.add_argument('--hidden-dim', type=int, default=384)
     parser.add_argument('--conv-dim', type=int, default=1024)
     # data size
     parser.add_argument('--batch-size', type=int, default=64)
@@ -341,7 +349,7 @@ if __name__ == '__main__':
     FLAGS = parser.parse_args()
     device = torch.device('cuda:%d'%(FLAGS.gpu_id) if torch.cuda.is_available() else 'cpu')
 
-    vae = FullQDisentangledVAE(frames=8, z_dim=32, hidden_dim=512, conv_dim=1024, device=device)
+    vae = FullQDisentangledVAE(frames=FLAGS.frame_size, z_dim=FLAGS.z_dim, hidden_dim=FLAGS.hidden_dim, conv_dim=FLAGS.conv_dim, device=device)
     sprites_train = Sprites('./dataset/lpc-dataset/train/', 6687)
     sprites_test = Sprites('./dataset/lpc-dataset/test/', 873)
     starttime = datetime.datetime.now()

@@ -136,7 +136,7 @@ class FullQDisentangledVAE(nn.Module):
 
         #zt_1 = torch.zeros(batch_size, self.z_dim).to(device)
 
-        z_fwd = zt_prev.new_zeros(batch_size, self.hidden_dim)
+        z_fwd = torch.zeros(batch_size, self.hidden_dim)
         z0_post_out = self.z_post_out(lstm[:,0])
         z0_post_mean = z0_post_out[:,:self.z_dim]
         z0_post_lar = z0_post_out[:,self.z_dim:]

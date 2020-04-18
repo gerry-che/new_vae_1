@@ -133,12 +133,23 @@ class FullQDisentangledVAE(nn.Module):
         zt_obs_list.append(zt_1_dec)
         batch_size = lstm_out.shape[0]
         seq_size = lstm_out.shape[1]
-        zt_1 = [prior_z0.rsample() for i in range(batch_size)]
-        zt_1 = torch.stack(zt_1, dim=0)
+
         #zt_1 = torch.zeros(batch_size, self.z_dim).to(device)
 
-        z_fwd = zt_1.new_zeros(batch_size, self.hidden_dim)
-
+        z_fwd = zt_prev.new_zeros(batch_size, self.hidden_dim)
+        z0_post_out = self.z_post_out(lstm[:,0])
+        z0_post_mean = z0_post_out[:,:self.z_dim]
+        z0_post_lar = z0_post_out[:,self.z_dim:]
+        z0_post = Normal(z0_post_mean, F.softplus(z0_post_lar) + 1e-5 )
+        post_z_list.append(z0_post)
+        z0_obs = z0_post.rsample()
+        z_obs_list.append(z0_obs)
+        zt_prev = z0_obs
+        
+        z0_prior = Normal(0. , 1.)
+        prior_z_lost.append(z0_prior)
+       
+        
         for t in range(1, seq_size):
             if torch.isnan(zt_1).any().item():
                 print('zt-1 in process is nan and sequence num is %d'%(t))
@@ -156,7 +167,7 @@ class FullQDisentangledVAE(nn.Module):
             zt_obs_list.append(zt_obs)
 
             # prior over ct of each block, ct_i~p(ct_i|zt-1_i)
-            z_fwd = self.z_to_z_fwd(zt_obs, z_fwd)
+            z_fwd = self.z_to_z_fwd(zt_prev, z_fwd)
             z_prior_fwd = self.z_prior_fwd(z_fwd)
             z_prior_fwd = self.z_prior_out(z_prior_fwd)
 
@@ -166,6 +177,7 @@ class FullQDisentangledVAE(nn.Module):
             # store the prior of ct_i
             z_prior = Normal(z_fwd_latent_mean, F.softplus(z_fwd_latent_lar)+ 1e-5)
             prior_z_lost.append(z_prior)
+            zt_prev = zt_obs
             
 
         zt_obs_list = torch.stack(zt_obs_list, dim=1)

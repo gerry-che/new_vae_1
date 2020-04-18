@@ -152,10 +152,11 @@ class FullQDisentangledVAE(nn.Module):
             post_z_list.append(z_post) # keep > 0
 
             # p(xt|zt)
-            zt_obs_list.append(z_post.rsample())
+            zt_obs = z_post.rsample()
+            zt_obs_list.append(zt_obs)
 
             # prior over ct of each block, ct_i~p(ct_i|zt-1_i)
-            z_fwd = self.z_to_z_fwd(zt_1, z_fwd)
+            z_fwd = self.z_to_z_fwd(zt_obs, z_fwd)
             z_prior_fwd = self.z_prior_fwd(z_fwd)
             z_prior_fwd = self.z_prior_out(z_prior_fwd)
 
@@ -165,7 +166,7 @@ class FullQDisentangledVAE(nn.Module):
             # store the prior of ct_i
             z_prior = Normal(z_fwd_latent_mean, F.softplus(z_fwd_latent_lar)+ 1e-5)
             prior_z_lost.append(z_prior)
-            zt_1 = z_prior.rsample()
+            
 
         zt_obs_list = torch.stack(zt_obs_list, dim=1)
 

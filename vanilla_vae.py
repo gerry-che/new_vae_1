@@ -43,21 +43,11 @@ class FullQDisentangledVAE(nn.Module):
         self.z_lstm = nn.LSTM(self.conv_dim, self.hidden_dim, 1,
                               bidirectional=True, batch_first=True)
         self.z_rnn = nn.RNN(self.hidden_dim *2, self.hidden_dim, batch_first=True)
-        self.z_mean = nn.Linear(self.hidden_dim, self.z_dim)
-        self.z_logvar = nn.Linear(self.hidden_dim, self.z_dim)
+        self.z_post_fwd = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.z_post_out = nn.Linear(self.hidden_dim, self.z_dim * 2)
 
-        self.z_mean_prior = nn.Sequential(
-            nn.Linear(self.hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, self.z_dim)
-        )
-        self.z_logvar_prior = nn.Sequential(
-            nn.Linear(self.hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, self.z_dim)
-        )
-
-        # self.z_to_c_fwd = nn.Linear(self.z_dim, self.z_dim)
+        self.z_prior_fwd = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.z_prior_out = nn.Linear(self.hidden_dim, self.z_dim * 2)
         self.z_to_z_fwd = GRUCell(input_size=self.z_dim, hidden_size=self.hidden_dim).to(device)
 
         self.conv1 = nn.Conv2d(3, 256, kernel_size=4, stride=2, padding=1)
@@ -122,11 +112,14 @@ class FullQDisentangledVAE(nn.Module):
     def encode_z(self, x):
         lstm_out, _ = self.z_lstm(x)
         lstm_out, _ = self.z_rnn(lstm_out)
+        lstm_out = self.z_post_fwd(lstm_out)
         post_z_list = []
         prior_z_lost = []
         zt_obs_list = []
-        zt_1_mean = self.z_mean(lstm_out[:,0])
-        zt_1_lar = self.z_logvar(lstm_out[:,0])
+
+        zt_1_post = self.z_post_out(lstm_out[:,0])
+        zt_1_mean = zt_1_post[:, :self.z_dim]
+        zt_1_lar = zt_1_post[:, self.z_dim:]
 
         post_z_1 = Normal(zt_1_mean, F.softplus(zt_1_lar) + 1e-5)
         post_z_list.append(post_z_1)
@@ -150,8 +143,9 @@ class FullQDisentangledVAE(nn.Module):
             if torch.isnan(zt_1).any().item():
                 print('zt-1 in process is nan and sequence num is %d'%(t))
             # posterior over ct, q(ct|ot,ft)
-            zt_post_mean = self.z_mean(lstm_out[:, t])
-            zt_post_lar = self.z_logvar(lstm_out[:, t])
+            z_post_out = self.z_post_out(lstm_out[:, t])
+            zt_post_mean = z_post_out[:, :self.z_dim]
+            zt_post_lar = z_post_out[:, self.z_dim:]
 
             z_post = Normal(zt_post_mean, F.softplus(zt_post_lar) + 1e-5 )
 
@@ -162,8 +156,11 @@ class FullQDisentangledVAE(nn.Module):
 
             # prior over ct of each block, ct_i~p(ct_i|zt-1_i)
             z_fwd = self.z_to_z_fwd(zt_1, z_fwd)
-            z_fwd_latent_mean = self.z_mean_prior(z_fwd)
-            z_fwd_latent_lar = self.z_logvar_prior(z_fwd)
+            z_prior_fwd = self.z_prior_fwd(z_fwd)
+            z_prior_fwd = self.z_prior_out(z_prior_fwd)
+
+            z_fwd_latent_mean = z_prior_fwd[:, :self.z_dim]
+            z_fwd_latent_lar = z_prior_fwd[:, self.z_dim:]
 
             # store the prior of ct_i
             z_prior = Normal(z_fwd_latent_mean, F.softplus(z_fwd_latent_lar)+ 1e-5)
@@ -269,10 +266,13 @@ class Trainer(object):
 
                 # prior over ct of each block, ct_i~p(ct_i|zt-1_i)
                 z_fwd = self.model.z_to_z_fwd(zt_1, z_fwd)
-                c_fwd_latent_mean = self.model.z_mean_prior(z_fwd)
-                c_fwd_latent_lar = self.model.z_logvar_prior(z_fwd)
+                z_prior_fwd = self.model.z_prior_fwd(z_fwd)
+                z_prior_fwd = self.model.z_prior_out(z_prior_fwd)
 
-                zt = Normal(c_fwd_latent_mean, F.softplus(c_fwd_latent_lar) + 1e-5).rsample()
+                z_fwd_latent_mean = z_prior_fwd[:, :self.model.z_dim]
+                z_fwd_latent_lar = z_prior_fwd[:, self.model.z_dim:]
+
+                zt = Normal(z_fwd_latent_mean, F.softplus(z_fwd_latent_lar) + 1e-5).rsample()
 
                 zt_dec.append(zt)
                 zt_1 = zt
@@ -291,6 +291,7 @@ class Trainer(object):
 
     def train_model(self):
         self.model.train()
+
         write_log(self.model.z_to_z_fwd, self.log_path)
         for epoch in range(self.start_epoch, self.epochs):
             losses = []
@@ -341,12 +342,15 @@ if __name__ == '__main__':
     parser.add_argument('--nsamples', type=int, default=2)
 
     # optimization
-    parser.add_argument('--learn-rate', type=float, default=0.0001)
+    parser.add_argument('--learn-rate', type=float, default=0.0002)
     parser.add_argument('--grad-clip', type=float, default=0.0)
     parser.add_argument('--max-epochs', type=int, default=100)
     parser.add_argument('--gpu_id', type=int, default=1)
 
     FLAGS = parser.parse_args()
+    np.random.seed(FLAGS.seed)
+    torch.manual_seed(FLAGS.seed)
+    torch.cuda.manual_seed(FLAGS.seed)
     device = torch.device('cuda:%d'%(FLAGS.gpu_id) if torch.cuda.is_available() else 'cpu')
 
     vae = FullQDisentangledVAE(frames=FLAGS.frame_size, z_dim=FLAGS.z_dim, hidden_dim=FLAGS.hidden_dim, conv_dim=FLAGS.conv_dim, device=device)

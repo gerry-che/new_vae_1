@@ -47,22 +47,11 @@ class FullQDisentangledVAE(nn.Module):
         self.z_lstm = nn.LSTM(self.conv_dim, self.hidden_dim, 1,
                               bidirectional=True, batch_first=True)
         self.z_rnn = nn.RNN(self.hidden_dim * 2, self.hidden_dim, batch_first=True)
-        self.z_mean = nn.Linear(self.hidden_dim, self.z_dim)
-        self.z_logvar = nn.Linear(self.hidden_dim, self.z_dim)
+        self.z_post_fwd = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.z_post_out = nn.Linear(self.hidden_dim, self.z_dim * 2)
 
-        self.z_mean_prior = nn.Sequential(
-            nn.Linear(self.hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, self.z_dim)
-        )
-        self.z_logvar_prior = nn.Sequential(
-            nn.Linear(self.hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, self.z_dim)
-        )
-
-        # self.z_mean_prior = nn.Linear(self.z_dim, self.z_dim)
-        # self.z_logvar_prior = nn.Linear(self.z_dim, self.z_dim)
+        self.z_prior_fwd = nn.Linear(self.hidden_dim, self.hidden_dim)
+        self.z_prior_out = nn.Linear(self.hidden_dim, self.z_dim * 2)
 
         self.z_to_c_fwd_list = [
             GRUCell(input_size=self.z_dim, hidden_size=self.hidden_dim // self.block_size).to(device)
@@ -132,11 +121,14 @@ class FullQDisentangledVAE(nn.Module):
     def encode_z(self, x):
         lstm_out, _ = self.z_lstm(x)
         lstm_out, _ = self.z_rnn(lstm_out)
+        lstm_out = self.z_post_fwd(lstm_out)
+
         post_z_list = []
         prior_z_lost = []
         zt_obs_list = []
-        zt_1_mean = self.z_mean(lstm_out[:,0])
-        zt_1_lar = self.z_logvar(lstm_out[:,0])
+        zt_1_post = self.z_post_out(lstm_out[:, 0])
+        zt_1_mean = zt_1_post[:, :self.z_dim]
+        zt_1_lar = zt_1_post[:, self.z_dim:]
 
         post_z_1 = Normal(zt_1_mean, F.softplus(zt_1_lar) + 1e-5)
 
@@ -160,12 +152,9 @@ class FullQDisentangledVAE(nn.Module):
         z_fwd_list = [torch.zeros(batch_size, self.hidden_dim//self.block_size).to(device) for i in range(self.block_size)]
         for t in range(1, seq_size):
 
-            if torch.isnan(zt_1).any().item():
-                print('zt-1 in process is nan and sequence num is %d'%(t))
-
-            # posterior over ct, q(ct|ot,ft)
-            zt_post_mean = self.z_mean(lstm_out[:, t])
-            zt_post_lar = self.z_logvar(lstm_out[:, t])
+            z_post_out = self.z_post_out(lstm_out[:, t])
+            zt_post_mean = z_post_out[:, :self.z_dim]
+            zt_post_lar = z_post_out[:, self.z_dim:]
 
             z_post = Normal(zt_post_mean, F.softplus(zt_post_lar) + 1e-5)
 
@@ -190,11 +179,14 @@ class FullQDisentangledVAE(nn.Module):
             wt = self.z_w_function(z_fwd_all)
             wt = cumsoftmax(wt)
 
-            zt_prior_mean = self.z_mean_prior(z_fwd_all)
-            zt_prior_lar = self.z_logvar_prior(z_fwd_all)
+            z_prior_fwd = self.z_prior_fwd(z_fwd_all)
+            z_prior_fwd = self.z_prior_out(z_prior_fwd)
+
+            z_fwd_latent_mean = z_prior_fwd[:, :self.z_dim]
+            z_fwd_latent_lar = z_prior_fwd[:, self.z_dim:]
 
             # store the prior of ct_i
-            z_prior = Normal(zt_prior_mean, F.softplus(zt_prior_lar) + 1e-5)
+            z_prior = Normal(z_fwd_latent_mean, F.softplus(z_fwd_latent_lar) + 1e-5)
             prior_z_lost.append(z_prior)
 
             zt = z_prior.rsample()
@@ -325,11 +317,14 @@ class Trainer(object):
                 wt = self.model.z_w_function(z_fwd_all)
                 wt = cumsoftmax(wt)
 
-                zt_prior_mean = self.model.z_mean_prior(z_fwd_all)
-                zt_prior_lar = self.model.z_logvar_prior(z_fwd_all)
+                z_prior_fwd = self.model.z_prior_fwd(z_fwd_all)
+                z_prior_fwd = self.model.z_prior_out(z_prior_fwd)
+
+                z_fwd_latent_mean = z_prior_fwd[:, :self.model.z_dim]
+                z_fwd_latent_lar = z_prior_fwd[:, self.model.z_dim:]
 
                 # store the prior of ct_i
-                z_prior = Normal(zt_prior_mean, F.softplus(zt_prior_lar) + 1e-5)
+                z_prior = Normal(z_fwd_latent_mean, F.softplus(z_fwd_latent_lar) + 1e-5)
                 zt = z_prior.rsample()
                 zt_dec.append(zt)
 
@@ -351,6 +346,7 @@ class Trainer(object):
 
     def train_model(self):
         self.model.train()
+        self.sample_frames(1)
         for epoch in range(self.start_epoch, self.epochs):
             losses = []
             write_log("Running Epoch : {}".format(epoch + 1), self.log_path)
@@ -405,6 +401,9 @@ if __name__ == '__main__':
     parser.add_argument('--gpu_id', type=int, default=0)
 
     FLAGS = parser.parse_args()
+    np.random.seed(FLAGS.seed)
+    torch.manual_seed(FLAGS.seed)
+    torch.cuda.manual_seed(FLAGS.seed)
     device = torch.device('cuda:%d' % (FLAGS.gpu_id) if torch.cuda.is_available() else 'cpu')
 
     vae = FullQDisentangledVAE(frames=FLAGS.frame_size, z_dim=FLAGS.z_dim, hidden_dim=FLAGS.hidden_dim, conv_dim=FLAGS.conv_dim, device=device)
